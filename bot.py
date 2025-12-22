@@ -177,8 +177,10 @@ async def summary(interaction: discord.Interaction, mode: app_commands.Choice[st
             if len(messages) >= 50:
                 break
     else:
-        # First run: take last 50 messages (oldest_first for coherent summary)
-        msgs = [m async for m in channel.history(limit=50, oldest_first=True)]
+        # First run: take last 50 messages (most recent)
+        msgs = [m async for m in channel.history(limit=50)]
+        # Reverse to chronological order (oldest first) for coherent summary
+        msgs.reverse()
         messages = [m for m in msgs if not m.author.bot]
 
     if not messages:
