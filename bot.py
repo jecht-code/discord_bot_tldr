@@ -88,41 +88,48 @@ def clean_text(s: str) -> str:
     return s.strip()
 
 def format_messages_for_summary(messages: List[discord.Message]) -> str:
-    # Keep it compact and consistent for the summarizer
+    # Better formatting with context for the summarizer
     lines = []
+    lines.append("Discord conversation to summarize (identify main topics and key points):")
+    lines.append("")
+
     for m in messages:
         author = m.author.display_name
         content = clean_text(m.content)
         if not content:
             continue
-        lines.append(f"{author}: {content}")
+        # Add message with author prefix
+        lines.append(f"[{author}] {content}")
+
     return "\n".join(lines)
 
 def summarize_text(text: str) -> str:
     """
-    distilbart-cnn has input limits. We'll:
-    - chunk by characters (simple, reliable)
-    - summarize each chunk
-    - then summarize the summaries (optional)
+    Improved summarization that handles multiple topics better.
+    - Larger chunks to preserve context
+    - Longer summaries to cover multiple topics
+    - Better final summary that emphasizes main themes
     """
     if not text:
         return "No text to summarize."
 
-    # Rough safe chunk size for this model
-    CHUNK_CHARS = 2500
+    # Larger chunks for better context (model can handle up to 1024 tokens ~4000 chars)
+    CHUNK_CHARS = 3500
     chunks = [text[i:i+CHUNK_CHARS] for i in range(0, len(text), CHUNK_CHARS)]
 
     partial_summaries = []
     for ch in chunks:
-        # Adjust lengths to avoid weird outputs
-        out = summarizer(ch, max_length=130, min_length=40, do_sample=False)
+        # Longer summaries to capture more detail and multiple topics
+        out = summarizer(ch, max_length=200, min_length=60, do_sample=False)
         partial_summaries.append(out[0]["summary_text"].strip())
 
     if len(partial_summaries) == 1:
         return partial_summaries[0]
 
-    combined = " ".join(partial_summaries)
-    final = summarizer(combined, max_length=140, min_length=50, do_sample=False)[0]["summary_text"].strip()
+    # Combine all partial summaries with instruction to cover main topics
+    combined = "Key points from conversation: " + " ".join(partial_summaries)
+    # Allow longer final summary to cover multiple topics
+    final = summarizer(combined, max_length=250, min_length=80, do_sample=False)[0]["summary_text"].strip()
     return final
 
 # ---- Discord bot ----
