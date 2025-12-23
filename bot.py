@@ -132,6 +132,46 @@ def summarize_text(text: str) -> str:
     final = summarizer(combined, max_length=250, min_length=80, do_sample=False)[0]["summary_text"].strip()
     return final
 
+def create_participant_summaries(messages: List[discord.Message]) -> str:
+    """
+    Group messages by participant and create individual summaries.
+    Returns formatted string with each participant's summary.
+    """
+    from collections import defaultdict
+
+    # Group messages by author
+    participant_messages = defaultdict(list)
+    for m in messages:
+        author = m.author.display_name
+        content = clean_text(m.content)
+        if content:
+            participant_messages[author].append(content)
+
+    # Create summary for each participant
+    summaries = []
+    for author, msgs in participant_messages.items():
+        if len(msgs) == 0:
+            continue
+
+        # Combine all messages from this participant
+        combined_text = " ".join(msgs)
+
+        # For very short contributions, just show as-is
+        if len(combined_text) < 100:
+            summary = combined_text[:80] + "..." if len(combined_text) > 80 else combined_text
+        else:
+            # Summarize this participant's messages
+            try:
+                result = summarizer(combined_text, max_length=100, min_length=20, do_sample=False)
+                summary = result[0]["summary_text"].strip()
+            except:
+                # Fallback if summarization fails
+                summary = combined_text[:100] + "..."
+
+        summaries.append(f"**{author}:** {summary}")
+
+    return "\n".join(summaries)
+
 # ---- Discord bot ----
 intents = discord.Intents.default()
 intents.message_content = True  # REQUIRED for reading message content
@@ -198,23 +238,19 @@ async def summary(interaction: discord.Interaction, mode: app_commands.Choice[st
             set_bookmark(guild_id, channel_id, user_id, last_msg.id)
         return
 
-    # Create the input text
-    source_text = format_messages_for_summary(messages)
-    if not source_text.strip():
+    # Create per-participant summaries
+    summary_text = create_participant_summaries(messages)
+    if not summary_text.strip():
         await interaction.followup.send("Nothing to summarize (messages had no text content).")
         return
 
-    # Summarize locally
-    summary_text = summarize_text(source_text)
-
-    # Update bookmark to the last message we summarized
+    # Update bookmark to the last message we summarized (silently)
     newest_id = messages[-1].id
     set_bookmark(guild_id, channel_id, user_id, newest_id)
 
-    # Post result (kept short-ish for Discord)
-    header = f"**Summary (last unread · up to {len(messages)} messages)**"
-    footer = f"_Bookmark updated to message ID {newest_id}._"
-    await interaction.followup.send(f"{header}\n{summary_text}\n\n{footer}")
+    # Post result - clean format with participant summaries
+    header = f"**Summary ({len(messages)} messages)**\n"
+    await interaction.followup.send(f"{header}{summary_text}")
 
 if __name__ == "__main__":
     client.run(DISCORD_TOKEN)
