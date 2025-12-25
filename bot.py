@@ -1,3 +1,14 @@
+"""
+Discord TL;DR Bot - Quick catch-up summaries for busy people.
+
+Commands:
+    /tldr [count]     - Summarize the last N messages (default: 50)
+    /catchup          - Summarize everything since your last bookmark
+    /mark             - Set bookmark at current position without summarizing
+
+Uses Claude 3.5 Sonnet API for high-quality conversational summaries.
+"""
+
 import os
 import re
 import sqlite3
@@ -25,10 +36,10 @@ anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY)
 # ---- SQLite bookmark store ----
 DB_PATH = "bookmarks.db"
 
+
 def init_db() -> None:
     with sqlite3.connect(DB_PATH) as con:
-        con.execute(
-            """
+        con.execute("""
             CREATE TABLE IF NOT EXISTS bookmarks (
                 guild_id TEXT NOT NULL,
                 channel_id TEXT NOT NULL,
@@ -37,142 +48,208 @@ def init_db() -> None:
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (guild_id, channel_id, user_id)
             )
-            """
-        )
+        """)
         con.commit()
+
 
 def get_bookmark(guild_id: int, channel_id: int, user_id: int) -> Optional[int]:
     with sqlite3.connect(DB_PATH) as con:
         row = con.execute(
-            """
-            SELECT last_seen_message_id
-            FROM bookmarks
-            WHERE guild_id=? AND channel_id=? AND user_id=?
-            """,
+            "SELECT last_seen_message_id FROM bookmarks WHERE guild_id=? AND channel_id=? AND user_id=?",
             (str(guild_id), str(channel_id), str(user_id)),
         ).fetchone()
-    if not row:
-        return None
-    try:
-        return int(row[0])
-    except ValueError:
-        return None
+    if row:
+        try:
+            return int(row[0])
+        except ValueError:
+            pass
+    return None
+
 
 def set_bookmark(guild_id: int, channel_id: int, user_id: int, message_id: int) -> None:
     with sqlite3.connect(DB_PATH) as con:
-        con.execute(
-            """
+        con.execute("""
             INSERT INTO bookmarks (guild_id, channel_id, user_id, last_seen_message_id, updated_at)
             VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(guild_id, channel_id, user_id)
             DO UPDATE SET last_seen_message_id=excluded.last_seen_message_id, updated_at=excluded.updated_at
-            """,
-            (
-                str(guild_id),
-                str(channel_id),
-                str(user_id),
-                str(message_id),
-                datetime.now(timezone.utc).isoformat(),
-            ),
-        )
+        """, (
+            str(guild_id), str(channel_id), str(user_id),
+            str(message_id), datetime.now(timezone.utc).isoformat()
+        ))
         con.commit()
 
-# ---- Helpers ----
-def clean_text(s: str) -> str:
-    # Remove common discord noise
-    s = re.sub(r"<@!?(\d+)>", "@user", s)          # mentions
-    s = re.sub(r"<#(\d+)>", "#channel", s)         # channel mentions
-    s = re.sub(r"<@&(\d+)>", "@role", s)           # role mentions
-    s = re.sub(r"https?://\S+", "[link]", s)       # links
-    s = s.replace("```", "")                       # code fences
-    return s.strip()
 
-def create_participant_summaries(messages: List[discord.Message]) -> str:
+# ---- Text Processing ----
+
+def clean_message(text: str) -> str:
+    """Clean Discord-specific formatting from message text."""
+    text = re.sub(r"<@!?(\d+)>", "", text)           # Remove user mentions
+    text = re.sub(r"<#(\d+)>", "", text)             # Remove channel mentions
+    text = re.sub(r"<@&(\d+)>", "", text)            # Remove role mentions
+    text = re.sub(r"<a?:\w+:\d+>", "", text)         # Remove custom emoji
+    text = re.sub(r"https?://\S+", "[link]", text)   # Simplify links
+    text = re.sub(r"```[\s\S]*?```", "[code]", text) # Simplify code blocks
+    text = re.sub(r"`[^`]+`", "[code]", text)        # Simplify inline code
+    text = re.sub(r"\s+", " ", text)                 # Normalize whitespace
+    return text.strip()
+
+
+def format_conversation(messages: List[discord.Message]) -> str:
     """
-    Group messages by participant and create individual summaries using Claude API.
-    Returns formatted string with each participant's summary.
+    Format messages as a natural conversation for Claude.
+
+    Format:
+        Person A: message
+        Person B: reply
+        Person A: another message
     """
-    from collections import defaultdict
+    lines = []
 
-    # Group messages by author
-    participant_messages = defaultdict(list)
-    for m in messages:
-        author = m.author.display_name
-        content = clean_text(m.content)
-        if content:
-            participant_messages[author].append(content)
+    for msg in messages:
+        content = clean_message(msg.content)
+        if not content or len(content) < 2:
+            continue
 
-    # Build conversation context for Claude
-    conversation_lines = []
-    for author, msgs in participant_messages.items():
-        for msg in msgs:
-            conversation_lines.append(f"[{author}] {msg}")
+        # Use display name, truncate if too long
+        author = msg.author.display_name[:20]
+        lines.append(f"{author}: {content}")
 
-    # Create prompt for Claude
-    prompt = f"""You are summarizing a Discord conversation. Below are messages from a chat, grouped by participant.
+    return "\n".join(lines)
 
-Your task:
-1. For each participant, write a 1-2 sentence summary of what they discussed
-2. Format as: **Name:** summary
-3. Focus on main topics and key points
-4. Keep summaries concise and clear
 
-Messages:
-{chr(10).join(conversation_lines)}
+def generate_tldr(text: str) -> str:
+    """
+    Generate a concise TL;DR summary using Claude API.
+    """
+    if not text or len(text.strip()) < 10:
+        return "Not enough content to summarize."
 
-Provide per-participant summaries now:"""
+    prompt = f"""You are summarizing a Discord conversation. Create a concise TL;DR summary.
+
+Rules:
+1. Be brief - aim for 2-4 sentences max
+2. Focus on the main topics and key points
+3. Mention who discussed what if relevant
+4. Use casual, conversational tone
+5. Don't start with "The conversation" or similar - just dive into the summary
+
+Conversation:
+{text}
+
+TL;DR:"""
 
     try:
-        # Call Claude API
         response = anthropic_client.messages.create(
             model="claude-3-5-sonnet-20241022",
-            max_tokens=1000,
+            max_tokens=300,
             messages=[
                 {"role": "user", "content": prompt}
             ]
         )
-
-        # Extract summary from response
-        summary_text = response.content[0].text.strip()
-        return summary_text
-
+        return response.content[0].text.strip()
     except Exception as e:
-        # Fallback if API fails
-        summaries = []
-        for author, msgs in participant_messages.items():
-            combined = " ".join(msgs)
-            preview = combined[:100] + "..." if len(combined) > 100 else combined
-            summaries.append(f"**{author}:** {preview}")
-        return "\n".join(summaries)
+        print(f"Claude API error: {e}")
+        return "Error generating summary. Please try again."
 
-# ---- Discord bot ----
+
+# ---- Discord Bot ----
+
 intents = discord.Intents.default()
-intents.message_content = True  # REQUIRED for reading message content
+intents.message_content = True  # Required for reading messages
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
+
 
 @client.event
 async def on_ready():
     init_db()
-    # Sync commands to Discord
     await tree.sync()
     print(f"Logged in as {client.user} (ready)")
+    print(f"Commands synced: /tldr, /catchup, /mark")
 
-@tree.command(name="summary", description="Summarize what you missed.")
-@app_commands.describe(mode="Choose summary mode")
-@app_commands.choices(
-    mode=[
-        app_commands.Choice(name="last_unread", value="last_unread"),
-    ]
-)
-async def summary(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+
+@tree.command(name="tldr", description="Get a quick TL;DR of recent messages")
+@app_commands.describe(count="Number of messages to summarize (default: 50, max: 200)")
+async def tldr_command(interaction: discord.Interaction, count: int = 50):
+    """Summarize the last N messages in the channel."""
+
     if not interaction.guild or not interaction.channel:
-        await interaction.response.send_message("This command only works in a server channel.", ephemeral=True)
+        await interaction.response.send_message(
+            "This command only works in server channels.", ephemeral=True
+        )
         return
 
     channel = interaction.channel
     if not isinstance(channel, discord.TextChannel):
-        await interaction.response.send_message("This command works in text channels only.", ephemeral=True)
+        await interaction.response.send_message(
+            "This command only works in text channels.", ephemeral=True
+        )
+        return
+
+    # Validate count
+    count = max(5, min(count, 200))  # Clamp between 5-200
+
+    await interaction.response.defer(thinking=True)
+
+    # Fetch messages
+    messages: List[discord.Message] = []
+    async for msg in channel.history(limit=count * 2):  # Fetch extra to filter bots
+        if msg.author.bot:
+            continue
+        messages.append(msg)
+        if len(messages) >= count:
+            break
+
+    # Reverse to chronological order (oldest first)
+    messages.reverse()
+
+    if not messages:
+        await interaction.followup.send("No messages found to summarize.")
+        return
+
+    # Generate summary
+    conversation = format_conversation(messages)
+    if len(conversation.strip()) < 20:
+        await interaction.followup.send("Not enough text content to summarize.")
+        return
+
+    summary = generate_tldr(conversation)
+
+    # Update bookmark to most recent message
+    set_bookmark(
+        interaction.guild.id,
+        channel.id,
+        interaction.user.id,
+        messages[-1].id
+    )
+
+    # Send clean embed
+    embed = discord.Embed(
+        title="TL;DR",
+        description=summary,
+        color=discord.Color.green()
+    )
+    embed.set_footer(text=f"{len(messages)} messages | Bookmark updated")
+
+    await interaction.followup.send(embed=embed)
+
+
+@tree.command(name="catchup", description="Summarize everything since your last visit")
+async def catchup_command(interaction: discord.Interaction):
+    """Summarize all messages since the user's last bookmark."""
+
+    if not interaction.guild or not interaction.channel:
+        await interaction.response.send_message(
+            "This command only works in server channels.", ephemeral=True
+        )
+        return
+
+    channel = interaction.channel
+    if not isinstance(channel, discord.TextChannel):
+        await interaction.response.send_message(
+            "This command only works in text channels.", ephemeral=True
+        )
         return
 
     await interaction.response.defer(thinking=True)
@@ -181,49 +258,92 @@ async def summary(interaction: discord.Interaction, mode: app_commands.Choice[st
     channel_id = channel.id
     user_id = interaction.user.id
 
-    # Bookmark logic
+    # Get user's bookmark
     last_seen = get_bookmark(guild_id, channel_id, user_id)
 
-    # Pull messages:
-    # - If we have a bookmark: fetch after it
-    # - If not: default to last 50 messages
     messages: List[discord.Message] = []
+
     if last_seen:
-        # Fetch messages after bookmark, cap to 50
-        async for m in channel.history(limit=200, after=discord.Object(id=last_seen), oldest_first=True):
-            if m.author.bot:
+        # Fetch messages after bookmark
+        async for msg in channel.history(limit=200, after=discord.Object(id=last_seen), oldest_first=True):
+            if msg.author.bot:
                 continue
-            messages.append(m)
-            if len(messages) >= 50:
-                break
+            messages.append(msg)
     else:
-        # First run: take last 50 messages (most recent)
+        # No bookmark - use last 50 messages
         msgs = [m async for m in channel.history(limit=50)]
-        # Reverse to chronological order (oldest first) for coherent summary
         msgs.reverse()
         messages = [m for m in msgs if not m.author.bot]
 
     if not messages:
-        await interaction.followup.send("Nothing new to summarize (no messages after your last bookmark).")
-        # If we have a bookmark already, keep it. If not, set to current latest message.
-        last_msg = await channel.fetch_message(channel.last_message_id) if channel.last_message_id else None
-        if last_msg:
-            set_bookmark(guild_id, channel_id, user_id, last_msg.id)
+        await interaction.followup.send(
+            "You're all caught up! No new messages since your last bookmark."
+        )
         return
 
-    # Create per-participant summaries
-    summary_text = create_participant_summaries(messages)
-    if not summary_text.strip():
-        await interaction.followup.send("Nothing to summarize (messages had no text content).")
+    # Generate summary
+    conversation = format_conversation(messages)
+    if len(conversation.strip()) < 20:
+        await interaction.followup.send("Not enough text content to summarize.")
         return
 
-    # Update bookmark to the last message we summarized (silently)
-    newest_id = messages[-1].id
-    set_bookmark(guild_id, channel_id, user_id, newest_id)
+    summary = generate_tldr(conversation)
 
-    # Post result - clean format with participant summaries
-    header = f"**Summary ({len(messages)} messages)**\n"
-    await interaction.followup.send(f"{header}{summary_text}")
+    # Update bookmark
+    set_bookmark(guild_id, channel_id, user_id, messages[-1].id)
+
+    # Send embed
+    embed = discord.Embed(
+        title="Catch-Up Summary",
+        description=summary,
+        color=discord.Color.blue()
+    )
+    embed.set_footer(text=f"{len(messages)} new messages | Bookmark updated")
+
+    await interaction.followup.send(embed=embed)
+
+
+@tree.command(name="mark", description="Set your bookmark to the current position")
+async def mark_command(interaction: discord.Interaction):
+    """Set bookmark without generating a summary."""
+
+    if not interaction.guild or not interaction.channel:
+        await interaction.response.send_message(
+            "This command only works in server channels.", ephemeral=True
+        )
+        return
+
+    channel = interaction.channel
+    if not isinstance(channel, discord.TextChannel):
+        await interaction.response.send_message(
+            "This command only works in text channels.", ephemeral=True
+        )
+        return
+
+    # Get the most recent message
+    last_msg = None
+    async for msg in channel.history(limit=1):
+        last_msg = msg
+        break
+
+    if not last_msg:
+        await interaction.response.send_message(
+            "No messages found in this channel.", ephemeral=True
+        )
+        return
+
+    set_bookmark(
+        interaction.guild.id,
+        channel.id,
+        interaction.user.id,
+        last_msg.id
+    )
+
+    await interaction.response.send_message(
+        "Bookmark set! Use `/catchup` next time to see what you missed.",
+        ephemeral=True
+    )
+
 
 if __name__ == "__main__":
     client.run(DISCORD_TOKEN)

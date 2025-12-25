@@ -1,14 +1,15 @@
 # Discord Bot TLDR
 
-A Discord bot that summarizes Discord conversations using Claude AI. The bot creates per-participant summaries and tracks your reading position with bookmarks.
+Quick catch-up summaries for busy people. A Discord bot that summarizes conversations using Claude AI and tracks your reading position with bookmarks.
 
 ## Features
 
-- Summarize unread messages in Discord channels
-- Per-participant summaries (see what each person discussed)
-- Personal bookmark tracking (remembers where you left off)
+- `/tldr [count]` - Summarize the last N messages (default: 50, max: 200)
+- `/catchup` - Summarize everything since your last bookmark
+- `/mark` - Set bookmark at current position without summarizing
 - Powered by Claude 3.5 Sonnet for high-quality summaries
-- Smart topic detection and concise formatting
+- Personal bookmark tracking per channel
+- Clean Discord embeds for output
 
 ## Prerequisites
 
@@ -88,25 +89,31 @@ When you see `Logged in as YourBot (ready)`, the bot is running!
 
 ## Usage
 
-In any text channel where the bot has access, use:
+In any text channel where the bot has access:
 
+### Quick Summary
 ```
-/summary
+/tldr
 ```
+Summarizes the last 50 messages. Add a number for more: `/tldr 100`
 
-Then choose `last_unread` mode.
+### Catch Up Since Last Visit
+```
+/catchup
+```
+Summarizes all messages since your last bookmark (or last 50 if first time).
 
-The bot will:
-- Summarize messages since your last bookmark (or last 50 messages if first time)
-- Create individual summaries for each participant
-- Show what each person discussed
-- Update your bookmark to the latest message
+### Mark Your Position
+```
+/mark
+```
+Sets your bookmark without generating a summary. Use `/catchup` later to see what you missed.
 
 ## How It Works
 
 - **Bookmarks**: Tracks the last message you've summarized per channel using a local SQLite database
-- **Summarization**: Uses Claude 3.5 Sonnet API to generate intelligent, context-aware summaries
-- **Per-Participant Format**: Groups messages by author and summarizes each person's contributions separately
+- **Summarization**: Uses Claude 3.5 Sonnet API to generate concise TL;DR summaries
+- **Text Cleaning**: Removes Discord formatting (mentions, emoji, code blocks) for cleaner summaries
 - **Cost**: Approximately $0.001-0.003 per summary (extremely low cost)
 
 ## Troubleshooting
@@ -145,14 +152,7 @@ discord_bot_tldr/
 ## Notes
 
 - "Unread" tracking is based on your bookmark, not Discord's native unread state (which isn't exposed to bots)
-- The bot processes up to 50 messages at a time
+- `/tldr` supports 5-200 messages, `/catchup` fetches up to 200 messages since bookmark
 - Summaries are fast (1-3 seconds) using Claude API
 - Each summary costs approximately $0.001-0.003 (very affordable)
 - Your Claude API key is stored locally in `.env` (never committed to git)
-
-## Future Improvements
-
-- Multiple summary modes (bullet points, detailed, comprehensive)
-- Custom message limits (adjust the 50 message cap)
-- Multi-channel summaries
-- Summary of specific time ranges
