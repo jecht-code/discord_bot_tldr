@@ -7,20 +7,20 @@ from typing import Optional, List
 import discord
 from discord import app_commands
 from dotenv import load_dotenv
-
-from transformers import pipeline
+from anthropic import Anthropic
 
 load_dotenv()
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-MODEL_NAME = os.getenv("SUMMARY_MODEL", "sshleifer/distilbart-cnn-12-6")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
 if not DISCORD_TOKEN:
     raise RuntimeError("Missing DISCORD_TOKEN in .env")
+if not ANTHROPIC_API_KEY:
+    raise RuntimeError("Missing ANTHROPIC_API_KEY in .env")
 
-# ---- Summarizer (local CPU) ----
-# This loads once at startup. First run may take a bit to download the model.
-summarizer = pipeline("summarization", model=MODEL_NAME, device=-1)
+# ---- Claude API client ----
+anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
 # ---- SQLite bookmark store ----
 DB_PATH = "bookmarks.db"
@@ -87,54 +87,9 @@ def clean_text(s: str) -> str:
     s = s.replace("```", "")                       # code fences
     return s.strip()
 
-def format_messages_for_summary(messages: List[discord.Message]) -> str:
-    # Better formatting with context for the summarizer
-    lines = []
-    lines.append("Discord conversation to summarize (identify main topics and key points):")
-    lines.append("")
-
-    for m in messages:
-        author = m.author.display_name
-        content = clean_text(m.content)
-        if not content:
-            continue
-        # Add message with author prefix
-        lines.append(f"[{author}] {content}")
-
-    return "\n".join(lines)
-
-def summarize_text(text: str) -> str:
-    """
-    Improved summarization that handles multiple topics better.
-    - Larger chunks to preserve context
-    - Longer summaries to cover multiple topics
-    - Better final summary that emphasizes main themes
-    """
-    if not text:
-        return "No text to summarize."
-
-    # Larger chunks for better context (model can handle up to 1024 tokens ~4000 chars)
-    CHUNK_CHARS = 3500
-    chunks = [text[i:i+CHUNK_CHARS] for i in range(0, len(text), CHUNK_CHARS)]
-
-    partial_summaries = []
-    for ch in chunks:
-        # Longer summaries to capture more detail and multiple topics
-        out = summarizer(ch, max_length=200, min_length=60, do_sample=False)
-        partial_summaries.append(out[0]["summary_text"].strip())
-
-    if len(partial_summaries) == 1:
-        return partial_summaries[0]
-
-    # Combine all partial summaries with instruction to cover main topics
-    combined = "Key points from conversation: " + " ".join(partial_summaries)
-    # Allow longer final summary to cover multiple topics
-    final = summarizer(combined, max_length=250, min_length=80, do_sample=False)[0]["summary_text"].strip()
-    return final
-
 def create_participant_summaries(messages: List[discord.Message]) -> str:
     """
-    Group messages by participant and create individual summaries.
+    Group messages by participant and create individual summaries using Claude API.
     Returns formatted string with each participant's summary.
     """
     from collections import defaultdict
@@ -147,30 +102,48 @@ def create_participant_summaries(messages: List[discord.Message]) -> str:
         if content:
             participant_messages[author].append(content)
 
-    # Create summary for each participant
-    summaries = []
+    # Build conversation context for Claude
+    conversation_lines = []
     for author, msgs in participant_messages.items():
-        if len(msgs) == 0:
-            continue
+        for msg in msgs:
+            conversation_lines.append(f"[{author}] {msg}")
 
-        # Combine all messages from this participant
-        combined_text = " ".join(msgs)
+    # Create prompt for Claude
+    prompt = f"""You are summarizing a Discord conversation. Below are messages from a chat, grouped by participant.
 
-        # For very short contributions, just show as-is
-        if len(combined_text) < 100:
-            summary = combined_text[:80] + "..." if len(combined_text) > 80 else combined_text
-        else:
-            # Summarize this participant's messages
-            try:
-                result = summarizer(combined_text, max_length=100, min_length=20, do_sample=False)
-                summary = result[0]["summary_text"].strip()
-            except:
-                # Fallback if summarization fails
-                summary = combined_text[:100] + "..."
+Your task:
+1. For each participant, write a 1-2 sentence summary of what they discussed
+2. Format as: **Name:** summary
+3. Focus on main topics and key points
+4. Keep summaries concise and clear
 
-        summaries.append(f"**{author}:** {summary}")
+Messages:
+{chr(10).join(conversation_lines)}
 
-    return "\n".join(summaries)
+Provide per-participant summaries now:"""
+
+    try:
+        # Call Claude API
+        response = anthropic_client.messages.create(
+            model="claude-3-5-sonnet-20241022",
+            max_tokens=1000,
+            messages=[
+                {"role": "user", "content": prompt}
+            ]
+        )
+
+        # Extract summary from response
+        summary_text = response.content[0].text.strip()
+        return summary_text
+
+    except Exception as e:
+        # Fallback if API fails
+        summaries = []
+        for author, msgs in participant_messages.items():
+            combined = " ".join(msgs)
+            preview = combined[:100] + "..." if len(combined) > 100 else combined
+            summaries.append(f"**{author}:** {preview}")
+        return "\n".join(summaries)
 
 # ---- Discord bot ----
 intents = discord.Intents.default()
