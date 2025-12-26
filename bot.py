@@ -6,7 +6,7 @@ Commands:
     /catchup          - Summarize everything since your last bookmark
     /mark             - Set bookmark at current position without summarizing
 
-Uses Claude 3.5 Sonnet API for high-quality conversational summaries.
+Uses Claude Sonnet 4 API for high-quality conversational summaries.
 """
 
 import os
@@ -141,7 +141,7 @@ TL;DR:"""
 
     try:
         response = anthropic_client.messages.create(
-            model="claude-3-5-sonnet-20241022",
+            model="claude-sonnet-4-20250514",
             max_tokens=300,
             messages=[
                 {"role": "user", "content": prompt}
