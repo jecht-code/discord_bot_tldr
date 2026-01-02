@@ -5,6 +5,7 @@ Commands:
     /tldr [count]     - Summarize the last N messages (default: 50)
     /catchup          - Summarize everything since your last bookmark
     /mark             - Set bookmark at current position without summarizing
+    /topside          - Get ARC Raiders event timers
 
 Uses Claude Sonnet 4 API for high-quality conversational summaries.
 """
@@ -15,6 +16,7 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Optional, List
 
+import aiohttp
 import discord
 from discord import app_commands
 from dotenv import load_dotenv
@@ -32,6 +34,9 @@ if not ANTHROPIC_API_KEY:
 
 # ---- Claude API client ----
 anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY)
+
+# ---- Metaforge API ----
+METAFORGE_EVENT_TIMERS_URL = "https://metaforge.app/api/arc-raiders/event-timers"
 
 # ---- SQLite bookmark store ----
 DB_PATH = "bookmarks.db"
@@ -166,7 +171,7 @@ async def on_ready():
     init_db()
     await tree.sync()
     print(f"Logged in as {client.user} (ready)")
-    print(f"Commands synced: /tldr, /catchup, /mark")
+    print(f"Commands synced: /tldr, /catchup, /mark, /topside")
 
 
 @tree.command(name="tldr", description="Get a quick TL;DR of recent messages")
@@ -343,6 +348,113 @@ async def mark_command(interaction: discord.Interaction):
         "Bookmark set! Use `/catchup` next time to see what you missed.",
         ephemeral=True
     )
+
+
+@tree.command(name="topside", description="Get ARC Raiders event timers from Metaforge")
+async def topside_command(interaction: discord.Interaction):
+    """Fetch and display ARC Raiders event timers."""
+
+    await interaction.response.defer(thinking=True)
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(METAFORGE_EVENT_TIMERS_URL) as response:
+                if response.status != 200:
+                    await interaction.followup.send(
+                        f"Failed to fetch event timers (HTTP {response.status})"
+                    )
+                    return
+                data = await response.json()
+    except Exception as e:
+        print(f"Metaforge API error: {e}")
+        await interaction.followup.send("Error connecting to Metaforge API.")
+        return
+
+    events = data.get("data", [])
+    if not events:
+        await interaction.followup.send("No events found.")
+        return
+
+    # Get current UTC time for comparison
+    now = datetime.now(timezone.utc)
+    current_hour = now.hour
+    current_minute = now.minute
+
+    # Group events by map for better organization
+    events_by_map: dict[str, list] = {}
+    for event in events:
+        map_name = event.get("map", "Unknown")
+        if map_name not in events_by_map:
+            events_by_map[map_name] = []
+        events_by_map[map_name].append(event)
+
+    # Create embeds (Discord limits to 10 embeds per message)
+    embeds = []
+
+    # Main header embed
+    header_embed = discord.Embed(
+        title="ARC Raiders - Topside Event Timers",
+        description=f"Current UTC time: **{now.strftime('%H:%M')}**\nAll times shown in UTC (24h format)",
+        color=discord.Color.orange()
+    )
+    header_embed.set_footer(text="Data from metaforge.app")
+    embeds.append(header_embed)
+
+    # Create an embed for each map
+    for map_name, map_events in sorted(events_by_map.items()):
+        map_embed = discord.Embed(
+            title=f"{map_name}",
+            color=discord.Color.dark_orange()
+        )
+
+        for event in map_events:
+            event_name = event.get("name", "Unknown Event")
+            times = event.get("times", [])
+
+            if not times:
+                continue
+
+            # Format time windows
+            time_strings = []
+            is_active = False
+
+            for t in times:
+                start = t.get("start", "??:??")
+                end = t.get("end", "??:??")
+
+                # Check if currently active
+                try:
+                    start_hour = int(start.split(":")[0])
+                    end_hour = int(end.split(":")[0])
+
+                    # Handle midnight wrap (e.g., 22:00 - 00:00)
+                    if end_hour == 0:
+                        end_hour = 24
+
+                    if start_hour <= current_hour < end_hour:
+                        time_strings.append(f"**{start} - {end}** (ACTIVE)")
+                        is_active = True
+                    else:
+                        time_strings.append(f"{start} - {end}")
+                except:
+                    time_strings.append(f"{start} - {end}")
+
+            # Add field for this event
+            status_icon = "🟢" if is_active else "⏰"
+            field_value = "\n".join(time_strings) if time_strings else "No times listed"
+
+            map_embed.add_field(
+                name=f"{status_icon} {event_name}",
+                value=field_value,
+                inline=True
+            )
+
+        # Only add embed if it has events
+        if map_embed.fields:
+            embeds.append(map_embed)
+
+    # Discord limits to 10 embeds per message
+    await interaction.followup.send(embeds=embeds[:10])
 
 
 if __name__ == "__main__":
