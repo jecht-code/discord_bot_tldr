@@ -15,6 +15,7 @@ import re
 import sqlite3
 from datetime import datetime, timezone
 from typing import Optional, List
+from zoneinfo import ZoneInfo
 
 import aiohttp
 import discord
@@ -375,10 +376,14 @@ async def topside_command(interaction: discord.Interaction):
         await interaction.followup.send("No events found.")
         return
 
-    # Get current UTC time for comparison
-    now = datetime.now(timezone.utc)
-    current_hour = now.hour
-    current_minute = now.minute
+    # Get current UTC time for comparison (API times are in UTC)
+    now_utc = datetime.now(timezone.utc)
+    current_hour = now_utc.hour
+    current_minute = now_utc.minute
+
+    # Convert to Eastern time for display
+    eastern = ZoneInfo("America/New_York")
+    now_eastern = now_utc.astimezone(eastern)
 
     # Group events by map for better organization
     events_by_map: dict[str, list] = {}
@@ -394,7 +399,7 @@ async def topside_command(interaction: discord.Interaction):
     # Main header embed
     header_embed = discord.Embed(
         title="ARC Raiders - Topside Event Timers",
-        description=f"Current UTC time: **{now.strftime('%H:%M')}**\nAll times shown in UTC (24h format)",
+        description=f"Current time: **{now_eastern.strftime('%I:%M %p')} ET**\nAll event times shown in UTC (24h format)",
         color=discord.Color.orange()
     )
     header_embed.set_footer(text="Data from metaforge.app")
