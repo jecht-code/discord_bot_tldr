@@ -399,7 +399,7 @@ async def topside_command(interaction: discord.Interaction):
     # Main header embed
     header_embed = discord.Embed(
         title="ARC Raiders - Topside Event Timers",
-        description=f"Current time: **{now_eastern.strftime('%I:%M %p')} ET**\nAll event times shown in UTC (24h format)",
+        description=f"Current time: **{now_eastern.strftime('%I:%M %p')} ET**\nAll event times shown in Eastern Time",
         color=discord.Color.orange()
     )
     header_embed.set_footer(text="Data from metaforge.app")
@@ -430,17 +430,27 @@ async def topside_command(interaction: discord.Interaction):
                 # Check if currently active
                 try:
                     start_hour = int(start.split(":")[0])
+                    start_min = int(start.split(":")[1])
                     end_hour = int(end.split(":")[0])
+                    end_min = int(end.split(":")[1])
 
-                    # Handle midnight wrap (e.g., 22:00 - 00:00)
-                    if end_hour == 0:
-                        end_hour = 24
+                    # Convert UTC to Eastern
+                    start_utc = now_utc.replace(hour=start_hour, minute=start_min, second=0, microsecond=0)
+                    end_utc = now_utc.replace(hour=end_hour, minute=end_min, second=0, microsecond=0)
+                    start_et = start_utc.astimezone(eastern)
+                    end_et = end_utc.astimezone(eastern)
 
-                    if start_hour <= current_hour < end_hour:
-                        time_strings.append(f"**{start} - {end}** (ACTIVE)")
+                    start_str = start_et.strftime('%I:%M %p').lstrip('0')
+                    end_str = end_et.strftime('%I:%M %p').lstrip('0')
+
+                    # Handle midnight wrap for active check (e.g., 22:00 - 00:00)
+                    check_end_hour = 24 if end_hour == 0 else end_hour
+
+                    if start_hour <= current_hour < check_end_hour:
+                        time_strings.append(f"**{start_str} - {end_str}** (ACTIVE)")
                         is_active = True
                     else:
-                        time_strings.append(f"{start} - {end}")
+                        time_strings.append(f"{start_str} - {end_str}")
                 except:
                     time_strings.append(f"{start} - {end}")
 
